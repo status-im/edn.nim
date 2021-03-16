@@ -129,7 +129,7 @@ type
   ParseError* = object of CatchableError
   ParseInfo* = tuple[line, col: int]
 
-  MacroReader = proc(p: var EdnParser): EdnNode
+  MacroReader = proc(p: var EdnParser): EdnNode {.gcsafe.}
   MacroArray = array[char, MacroReader]
 
 const non_constituents = ['@', '`', '~']
@@ -137,8 +137,8 @@ const non_constituents = ['@', '`', '~']
 converter to_int(c: char): int = result = ord(c)
 
 var
-  macros: MacroArray
-  dispatch_macros: MacroArray
+  macros {.threadvar.}: MacroArray
+  dispatch_macros {.threadvar.}: MacroArray
 
 proc non_constituent(c: char): bool =
   result = non_constituents.contains(c)
@@ -154,13 +154,13 @@ proc get_macro(ch: char): MacroReader =
 
 ## ============== HMAP TYPE AND FWD DECLS ===========
 
-proc new_hmap*(capacity: int = 16): HMap
+proc new_hmap*(capacity: int = 16): HMap {.gcsafe.}
 
-proc `[]=`*(m: HMap, key: EdnNode, val: EdnNode)
+proc `[]=`*(m: HMap, key: EdnNode, val: EdnNode) {.gcsafe.}
 
-proc val_at*(m: HMap, key: EdnNode, default: EdnNode = nil): EdnNode
+proc val_at*(m: HMap, key: EdnNode, default: EdnNode = nil): EdnNode {.gcsafe.}
 
-proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode]
+proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode] {.gcsafe.}
 
 proc len*(m: HMap): int = m.count
 
@@ -170,15 +170,18 @@ iterator items*(m: HMap): HMapEntry =
       for entry in b:
         yield entry
 
-proc merge_maps*(m1, m2 :HMap): void
+proc merge_maps*(m1, m2 :HMap): void {.gcsafe.}
 
-proc add_meta*(node: EdnNode, meta: HMap): EdnNode
+proc add_meta*(node: EdnNode, meta: HMap): EdnNode {.gcsafe.}
 
 ## ============== NEW OBJ FACTORIES =================
 
-let
-  edn_true*  = EdnNode(kind: EdnBool, bool_val: true)
-  edn_false* = EdnNode(kind: EdnBool, bool_val: false)
+var
+  edn_true* {.threadvar.}: EdnNode
+  edn_false* {.threadvar.}: EdnNode
+  # when a new thread is instantiated, the bool value is not copied to new thread,
+  # however we can rely on its default value to be false (uninitialised)
+  initialised {.threadvar.}: bool 
 
 proc new_edn_string_move(s: string): EdnNode =
   result = EdnNode(kind: EdnString)
@@ -221,17 +224,17 @@ proc new_edn_nil*(): EdnNode =
 
 ### === VALS ===
 
-let
-  EdnTrue: EdnNode  = edn_true
-  EdnFalse: EdnNode = edn_false
-  KeyTag*: EdnNode   = new_edn_keyword("", "tag")
-  CljTag: EdnNode   = new_edn_keyword("", "clj")
-  CljsTag: EdnNode  = new_edn_keyword("", "cljs")
-  DefaultTag: EdnNode = new_edn_keyword("", "default")
+var
+  EdnTrue {.threadvar.}: EdnNode
+  EdnFalse {.threadvar.}: EdnNode
+  KeyTag* {.threadvar.}: EdnNode
+  CljTag {.threadvar.}: EdnNode
+  CljsTag {.threadvar.}: EdnNode
+  DefaultTag {.threadvar.}: EdnNode
+  LineKw {.threadvar.}: EdnNode
+  ColumnKw {.threadvar.}: EdnNode
+  SplicedQKw* {.threadvar.}: EdnNode
 
-  LineKw: EdnNode   = new_edn_keyword("edn.nim", "line")
-  ColumnKw: EdnNode   = new_edn_keyword("edn.nim", "column")
-  SplicedQKw*: EdnNode = new_edn_keyword("edn.nim", "spliced?")
 
 ### === ERROR HANDLING UTILS ===
 
@@ -240,7 +243,7 @@ proc err_info*(p: EdnParser): ParseInfo =
 
 ### === MACRO READERS ===
 
-proc read*(p: var EdnParser): EdnNode
+proc read*(p: var EdnParser): EdnNode {.gcsafe.}
 
 proc valid_utf8_alpha(c: char): bool =
   return c.isAlphaAscii() or c >= 0xc0
@@ -618,7 +621,7 @@ proc maybe_add_comments(node: EdnNode, list_result: DelimitedListResult): EdnNod
     else: node.comments.add(co)
     return node
 
-proc get_meta*(node: EdnNode): HMap
+proc get_meta*(node: EdnNode): HMap {.gcsafe.}
 
 proc is_element_spliced(node: EdnNode): bool =
   case node.kind
@@ -786,7 +789,7 @@ proc read_anonymous_fn*(p: var EdnParser): EdnNode =
   discard maybe_add_comments(result, list_result)
   return result
 
-proc safely_add_meta(node: EdnNode, meta: HMap): EdnNode
+proc safely_add_meta(node: EdnNode, meta: HMap): EdnNode {.gcsafe.}
 
 const
   READER_COND_MSG = "reader conditional should be a list: "
@@ -1115,8 +1118,20 @@ proc init_dispatch_macro_array() =
   dispatch_macros['\''] = read_var_quote
 
 proc init_edn_readers() =
+  edn_true = EdnNode(kind: EdnBool, bool_val: true)
+  edn_false = EdnNode(kind: EdnBool, bool_val: false)
+  EdnTrue = edn_true
+  EdnFalse = edn_false
+  KeyTag = new_edn_keyword("", "tag")
+  CljTag = new_edn_keyword("", "clj")
+  CljsTag = new_edn_keyword("", "cljs")
+  DefaultTag = new_edn_keyword("", "default")
+  LineKw = new_edn_keyword("edn.nim", "line")
+  ColumnKw = new_edn_keyword("edn.nim", "column")
+  SplicedQKw = new_edn_keyword("edn.nim", "spliced?")
   init_macro_array()
   init_dispatch_macro_array()
+  initialised = true
 
 proc init_edn_readers*(options: ParseOptions) =
   case options.conditional_exprs
@@ -1337,6 +1352,9 @@ proc read_internal(p: var EdnParser): EdnNode =
     result.column = column
 
 proc read*(p: var EdnParser): EdnNode =
+  if not initialised:
+    init_edn_readers()
+    init_edn_readers(p.options)
   result = read_internal(p)
   let noComments = p.options.comments_handling == discardComments
   while result != nil and noComments and result.kind == EdnCommentLine:
