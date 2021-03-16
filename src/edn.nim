@@ -129,7 +129,7 @@ type
   ParseError* = object of CatchableError
   ParseInfo* = tuple[line, col: int]
 
-  MacroReader = proc(p: var EdnParser): EdnNode
+  MacroReader = proc(p: var EdnParser): EdnNode {.gcsafe.}
   MacroArray = array[char, MacroReader]
 
 const non_constituents = ['@', '`', '~']
@@ -137,30 +137,27 @@ const non_constituents = ['@', '`', '~']
 converter to_int(c: char): int = result = ord(c)
 
 var
-  macros: MacroArray
-  dispatch_macros: MacroArray
+  macros {.threadvar.}: MacroArray
+  dispatch_macros{.threadvar.}: MacroArray
 
 proc non_constituent(c: char): bool =
   result = non_constituents.contains(c)
 
-proc is_macro(c: char): bool =
+proc is_macro(c: char): bool {.gcsafe.} =
   result = c.to_int < macros.len and macros[c] != nil
 
-proc is_terminating_macro(c: char): bool =
+proc is_terminating_macro(c: char): bool {.gcsafe.} =
   result = c != '#' and c != '\'' and is_macro(c)
-
-proc get_macro(ch: char): MacroReader =
-  result = macros[ch]
 
 ## ============== HMAP TYPE AND FWD DECLS ===========
 
-proc new_hmap*(capacity: int = 16): HMap
+proc new_hmap*(capacity: int = 16): HMap {.gcsafe.}
 
-proc `[]=`*(m: HMap, key: EdnNode, val: EdnNode)
+proc `[]=`*(m: HMap, key: EdnNode, val: EdnNode) {.gcsafe.}
 
 proc val_at*(m: HMap, key: EdnNode, default: EdnNode = nil): EdnNode
 
-proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode]
+proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode] {.gcsafe.}
 
 proc len*(m: HMap): int = m.count
 
@@ -170,17 +167,24 @@ iterator items*(m: HMap): HMapEntry =
       for entry in b:
         yield entry
 
-proc merge_maps*(m1, m2 :HMap): void
+proc merge_maps*(m1, m2 :HMap): void {.gcsafe.}
 
-proc add_meta*(node: EdnNode, meta: HMap): EdnNode
+proc add_meta*(node: EdnNode, meta: HMap): EdnNode {.gcsafe.}
 
 ## ============== NEW OBJ FACTORIES =================
 
-let
-  edn_true*  = EdnNode(kind: EdnBool, bool_val: true)
-  edn_false* = EdnNode(kind: EdnBool, bool_val: false)
+# let
+#   edn_true*  = EdnNode(kind: EdnBool, bool_val: true)
+#   edn_false* = EdnNode(kind: EdnBool, bool_val: false)
 
-proc new_edn_string_move(s: string): EdnNode =
+var
+  edn_true* {.threadvar.}: EdnNode
+  edn_false* {.threadvar.}: EdnNode
+
+edn_true  = EdnNode(kind: EdnBool, bool_val: true)
+edn_false = EdnNode(kind: EdnBool, bool_val: false)
+
+proc new_edn_string_move(s: string): EdnNode {.gcsafe.} =
   result = EdnNode(kind: EdnString)
   shallowCopy(result.str, s)
 
@@ -199,18 +203,18 @@ proc new_edn_float*(s: string): EdnNode =
 proc new_edn_float*(val: float): EdnNode =
   return EdnNode(kind: EdnFloat, fnum: val)
 
-proc new_edn_bool*(val: bool): EdnNode =
+proc new_edn_bool*(val: bool): EdnNode {.gcsafe.} =
   case val
   of true: return edn_true
   of false: return edn_false
   # of true: return EdnNode(kind: EdnBool, boolVal: true)
   # of false: return EdnNode(kind: EdnBool, boolVal: false)
 
-proc new_edn_bool*(s: string): EdnNode =
+proc new_edn_bool*(s: string): EdnNode {.gcsafe.} =
   let parsed: bool = parseBool(s)
   return new_edn_bool(parsed)
 
-proc new_edn_symbol*(ns, name: string): EdnNode =
+proc new_edn_symbol*(ns, name: string): EdnNode {.gcsafe.} =
   return EdnNode(kind: EdnSymbol, symbol: (ns, name))
 
 proc new_edn_keyword*(ns, name: string): EdnNode =
@@ -221,17 +225,37 @@ proc new_edn_nil*(): EdnNode =
 
 ### === VALS ===
 
-let
-  EdnTrue: EdnNode  = edn_true
-  EdnFalse: EdnNode = edn_false
-  KeyTag*: EdnNode   = new_edn_keyword("", "tag")
-  CljTag: EdnNode   = new_edn_keyword("", "clj")
-  CljsTag: EdnNode  = new_edn_keyword("", "cljs")
-  DefaultTag: EdnNode = new_edn_keyword("", "default")
+var
+  EdnTrue {.threadvar.}: EdnNode
+  EdnFalse {.threadvar.}: EdnNode
+  KeyTag* {.threadvar.}: EdnNode
+  CljTag {.threadvar.}: EdnNode
+  CljsTag {.threadvar.}: EdnNode
+  DefaultTag {.threadvar.}: EdnNode
+  LineKw {.threadvar.}: EdnNode
+  ColumnKw {.threadvar.}: EdnNode
+  SplicedQKw* {.threadvar.}: EdnNode
 
-  LineKw: EdnNode   = new_edn_keyword("edn.nim", "line")
-  ColumnKw: EdnNode   = new_edn_keyword("edn.nim", "column")
-  SplicedQKw*: EdnNode = new_edn_keyword("edn.nim", "spliced?")
+EdnTrue = edn_true # maybe not needed because Nim's case and _ insensitivity
+EdnFalse = edn_false # maybe not needed because Nim's case and _ insensitivity
+KeyTag = new_edn_keyword("", "tag")
+CljTag = new_edn_keyword("", "clj")
+CljsTag = new_edn_keyword("", "cljs")
+DefaultTag = new_edn_keyword("", "default")
+LineKw = new_edn_keyword("edn.nim", "line")
+ColumnKw = new_edn_keyword("edn.nim", "column")
+SplicedQKw = new_edn_keyword("edn.nim", "spliced?")
+
+# let
+  # EdnTrue: EdnNode  = edn_true
+  # EdnFalse: EdnNode = edn_false
+  # KeyTag*: EdnNode   = new_edn_keyword("", "tag")
+  # CljTag: EdnNode   = new_edn_keyword("", "clj")
+  # CljsTag: EdnNode  = new_edn_keyword("", "cljs")
+  # DefaultTag: EdnNode = new_edn_keyword("", "default")
+  # LineKw: EdnNode   = new_edn_keyword("edn.nim", "line")
+  # ColumnKw: EdnNode   = new_edn_keyword("edn.nim", "column")
+  # SplicedQKw*: EdnNode = new_edn_keyword("edn.nim", "spliced?")
 
 ### === ERROR HANDLING UTILS ===
 
@@ -240,7 +264,7 @@ proc err_info*(p: EdnParser): ParseInfo =
 
 ### === MACRO READERS ===
 
-proc read*(p: var EdnParser): EdnNode
+proc read*(p: var EdnParser): EdnNode {.gcsafe.}
 
 proc valid_utf8_alpha(c: char): bool =
   return c.isAlphaAscii() or c >= 0xc0
@@ -261,7 +285,7 @@ proc parse_escaped_utf16(buf: cstring, pos: var int): int =
     else:
       return -1
 
-proc parse_string(p: var EdnParser): TokenKind =
+proc parse_string(p: var EdnParser): TokenKind {.gcsafe.} =
   result = tkString
   var pos = p.bufpos
   var buf = p.buf
@@ -328,32 +352,32 @@ proc parse_string(p: var EdnParser): TokenKind =
       inc(pos)
   p.bufpos = pos
 
-proc read_string(p: var EdnParser): EdnNode =
+proc read_string(p: var EdnParser): EdnNode {.gcsafe.} =
   discard parse_string(p)
   if p.err != errNone:
     raise newException(ParseError, "read_string failure: " & $p.err)
   result = new_edn_string_move(p.a)
   p.a = ""
 
-proc read_quoted_internal(p: var EdnParser, quote_name: string): EdnNode =
+proc read_quoted_internal(p: var EdnParser, quote_name: string): EdnNode {.gcsafe.} =
   let quoted = read(p)
   result = EdnNode(kind: EdnList)
   result.list = @[new_edn_symbol("", quote_name), quoted]
 
-proc read_quoted*(p: var EdnParser): EdnNode =
+proc read_quoted*(p: var EdnParser): EdnNode {.gcsafe.} =
   return read_quoted_internal(p, "quote")
 
-proc read_quasiquoted*(p: var EdnParser): EdnNode =
+proc read_quasi_quoted*(p: var EdnParser): EdnNode {.gcsafe.} =
   return read_quoted_internal(p, "quasiquote")
 
-proc read_unquoted*(p: var EdnParser): EdnNode =
+proc read_unquoted*(p: var EdnParser): EdnNode {.gcsafe.} =
   return read_quoted_internal(p, "unquote")
 
-proc read_deref*(p: var EdnParser): EdnNode =
+proc read_deref*(p: var EdnParser): EdnNode {.gcsafe.} =
   return read_quoted_internal(p, "deref")
 
 # TODO: read comment as continuous blocks, not just lines
-proc read_comment(p: var EdnParser): EdnNode =
+proc read_comment(p: var EdnParser): EdnNode {.gcsafe.} =
   var pos = p.bufpos
   var buf = p.buf
   result = EdnNode(kind: EdnCommentLine)
@@ -389,7 +413,7 @@ proc read_comment(p: var EdnParser): EdnNode =
         inc(pos)
     p.bufpos = pos
 
-proc read_token(p: var EdnParser, lead_constituent: bool): string =
+proc read_token(p: var EdnParser, lead_constituent: bool): string {.gcsafe.} =
   var pos = p.bufpos
   var ch = p.buf[pos]
   if lead_constituent and non_constituent(ch):
@@ -407,7 +431,7 @@ proc read_token(p: var EdnParser, lead_constituent: bool): string =
     result.add(ch)
   p.bufpos = pos
 
-proc read_character(p: var EdnParser): EdnNode =
+proc read_character(p: var EdnParser): EdnNode {.gcsafe.} =
   var pos = p.bufpos
   #var buf = p.buf
   let ch = p.buf[pos]
@@ -500,7 +524,7 @@ proc match_symbol(s: string): EdnNode =
     result = EdnNode(kind: EdnSymbol)
     result.symbol = (ns, name)
 
-proc interpret_token(token: string): EdnNode =
+proc interpret_token(token: string): EdnNode {.gcsafe.} =
   result = nil
   case token
   of "nil":
@@ -524,7 +548,7 @@ proc attach_comment_lines(node: EdnNode, comment_lines: seq[string], placement: 
   co.comment_lines = comment_lines
   if node.comments.len == 0: node.comments = @[co]
   else: node.comments.add(co)
-  
+
 type DelimitedListResult = object
   list: seq[EdnNode]
   comment_lines: seq[string]
@@ -534,7 +558,7 @@ type DelimitedListReadOptions = enum
   Recursive
 
 proc read_delimited_list(
-  p: var EdnParser, delimiter: char, opts: Table[DelimitedListReadOptions, bool]): DelimitedListResult =
+  p: var EdnParser, delimiter: char, opts: Table[DelimitedListReadOptions, bool]): DelimitedListResult {.gcsafe.} =
   # the bufpos should be already be past the opening paren etc.
   var list: seq[EdnNode] = @[]
   var comment_lines: seq[string] = @[]
@@ -560,7 +584,7 @@ proc read_delimited_list(
       break
 
     if is_macro(ch):
-      let m = get_macro(ch)
+      let m = macros[ch]
       inc(pos)
       p.bufpos = pos
       let node = m(p)
@@ -597,7 +621,7 @@ proc read_delimited_list(
           else:
             inc(count)
             list.add(node)
-              
+
   if comment_lines.len == 0:
     result.comment_lines = @[]
   else:
@@ -618,22 +642,22 @@ proc maybe_add_comments(node: EdnNode, list_result: DelimitedListResult): EdnNod
     else: node.comments.add(co)
     return node
 
-proc get_meta*(node: EdnNode): HMap
+proc get_meta*(node: EdnNode): HMap {.gcsafe.}
 
-proc is_element_spliced(node: EdnNode): bool =
+proc is_element_spliced(node: EdnNode): bool {.gcsafe.} =
   case node.kind
   of EdnVector, EdnList:
     let meta = node.get_meta()
     if meta == nil: return false
-    
+
     let is_spliced = meta[SplicedQKw]
     if is_spliced.is_none(): return false
     else: return is_spliced.get() == EdnTrue
 
   else:
-    return false  
+    return false
 
-proc splice_conditional_exprs(list_result: DelimitedListResult): seq[EdnNode] =
+proc splice_conditional_exprs(list_result: DelimitedListResult): seq[EdnNode] {.gcsafe.} =
   var indices: seq[int] = @[]
   var index = 0
   var spliced_result: Option[seq[EdnNode]] = none(seq[EdnNode])
@@ -666,8 +690,8 @@ proc splice_conditional_exprs(list_result: DelimitedListResult): seq[EdnNode] =
     return spliced_result.get()
   else:
     return list_result.list
-    
-proc read_list(p: var EdnParser): EdnNode =
+
+proc read_list(p: var EdnParser): EdnNode {.gcsafe.} =
   result = EdnNode(kind: EdnList)
   add_line_col_info(p, result)
   var delimited_result = read_delimited_list(p, ')', {Recursive: true}.to_table())
@@ -677,7 +701,7 @@ proc read_list(p: var EdnParser): EdnNode =
 const
   MAP_EVEN = "Map literal must contain even number of forms "
 
-proc read_map(p: var EdnParser): EdnNode =
+proc read_map(p: var EdnParser): EdnNode {.gcsafe.} =
   result = EdnNode(kind: EdnMap)
   var list_result = read_delimited_list(p, '}', {Recursive: true}.to_table())
   var
@@ -750,7 +774,7 @@ proc read_ns_map(p: var EdnParser): EdnNode =
     result = EdnNode(kind: EdnMap, map: map)
     discard maybe_add_comments(result, list_result)
 
-proc read_vector(p: var EdnParser): EdnNode =
+proc read_vector(p: var EdnParser): EdnNode {.gcsafe.} =
   result = EdnNode(kind: EdnVector)
   add_line_col_info(p, result)
   let delimited_result = read_delimited_list(p, ']', {Recursive: true}.to_table())
@@ -769,7 +793,7 @@ proc read_set(p: var EdnParser): EdnNode =
   while i <= elements.high:
     result.set_elems[elements[i]] = new_edn_bool(true)
     inc(i)
-    
+
 proc read_anonymous_fn*(p: var EdnParser): EdnNode =
   # TODO: extract arglist from fn body
   result = EdnNode(kind: EdnList)
@@ -786,14 +810,14 @@ proc read_anonymous_fn*(p: var EdnParser): EdnNode =
   discard maybe_add_comments(result, list_result)
   return result
 
-proc safely_add_meta(node: EdnNode, meta: HMap): EdnNode
+proc safely_add_meta(node: EdnNode, meta: HMap): EdnNode {.gcsafe.}
 
 const
   READER_COND_MSG = "reader conditional should be a list: "
   READER_COND_FEAT_KW = "feature should be a keyword: "
   READER_COND_AS_TAGGED_ERR = "'asTagged' option not available for reader conditionals"
 
-proc read_reader_conditional(p: var EdnParser): EdnNode =
+proc read_reader_conditional(p: var EdnParser): EdnNode {.gcsafe.} =
   # '#? (:clj ...)'
   let pos = p.bufpos
   var is_spliced: bool
@@ -802,7 +826,7 @@ proc read_reader_conditional(p: var EdnParser): EdnNode =
     inc(p.bufpos)
   else:
     is_spliced = false
-    
+
   let exp = read(p)
   if exp.kind != EdnList:
     raise new_exception(ParseError, READER_COND_MSG & $exp.kind)
@@ -856,7 +880,7 @@ proc read_reader_conditional(p: var EdnParser): EdnNode =
     var hmap = new_hmap()
     hmap[SplicedQKw] = EdnTrue
     discard add_meta(result, hmap)
-  
+
   return result
 
 
@@ -907,7 +931,7 @@ proc safely_add_meta(node: EdnNode, meta: HMap): EdnNode =
 const META_INVALID_MSG =
   "Metadata must be EdnSymbol, EdnKeyword, EdnString or EdnMap"
 
-proc read_metadata(p: var  EdnParser): EdnNode =
+proc read_metadata(p: var  EdnParser): EdnNode {.gcsafe.} =
   var m: HMap
   let old_opts = p.options
   p.options.eof_is_error = true
@@ -1059,19 +1083,19 @@ proc read_var_quote(p: var EdnParser): EdnNode =
     result = EdnNode(kind: EdnVarQuote, var_symbol: node)
   else:
     raise new_exception(ParseError, "Attempted to read a var qote, but got" & $node.kind)
-  
+
 proc read_regex(p: var EdnParser): EdnNode =
   let s = read_string(p)
   result = EdnNode(kind: EdnRegex, regex: s.str)
 
-proc read_unmatched_delimiter(p: var EdnParser): EdnNode =
+proc read_unmatched_delimiter(p: var EdnParser): EdnNode {.gcsafe.} =
   raise new_exception(ParseError, "Unmatched delimiter: " & p.buf[p.bufpos])
 
 proc read_discard(p: var EdnParser): EdnNode =
   discard read(p)
   result = nil
 
-proc read_dispatch(p: var EdnParser): EdnNode =
+proc read_dispatch(p: var EdnParser): EdnNode {.gcsafe.} =
   var pos = p.bufpos
   let ch = p.buf[pos]
   if ch == EndOfFile:
@@ -1184,7 +1208,7 @@ proc val_at*(m: HMap, key: EdnNode, default: EdnNode = nil): EdnNode =
         break
 
 
-      
+
 proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode] =
   let
     default = EdnNode(kind: EdnBool, bool_val: true)
@@ -1196,7 +1220,7 @@ proc `[]`*(m: HMap, key: EdnNode): Option[EdnNode] =
   else:
     return some(found)
 
-proc merge_maps*(m1, m2 :HMap): void = 
+proc merge_maps*(m1, m2 :HMap): void =
   for entry in m2:
     m1[entry.key] = entry.value
 
@@ -1293,7 +1317,7 @@ proc read_num(p: var EdnParser): EdnNode =
   else:
     raise new_exception(ParseError, "error reading a number (?): " & p.a)
 
-proc read_internal(p: var EdnParser): EdnNode =
+proc read_internal(p: var EdnParser): EdnNode {.gcsafe.} =
   setLen(p.a, 0)
   skip_ws(p)
   let ch = p.buf[p.bufpos]
@@ -1336,13 +1360,13 @@ proc read_internal(p: var EdnParser): EdnNode =
     result.line = line_num
     result.column = column
 
-proc read*(p: var EdnParser): EdnNode =
+proc read*(p: var EdnParser): EdnNode {.gcsafe.} =
   result = read_internal(p)
   let noComments = p.options.comments_handling == discardComments
   while result != nil and noComments and result.kind == EdnCommentLine:
     result = read_internal(p)
 
-proc read*(s: Stream, filename: string): EdnNode =
+proc read*(s: Stream, filename: string): EdnNode {.gcsafe.} =
   var p: EdnParser
   var opts: ParseOptions
   opts.eof_is_error = true
